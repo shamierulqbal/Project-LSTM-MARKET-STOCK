@@ -1,0 +1,86 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+
+st.set_page_config(page_title="FBMKLCI Forecaster", layout="wide")
+
+# --- Title and Description ---
+st.title("📊 FBMKLCI Stock Price Forecaster")
+st.markdown("""
+This app uses a **Long Short-Term Memory (LSTM)** network to predict the FBMKLCI index prices based on historical yearly data.
+""")
+
+# --- Load Data ---
+@st.cache_data
+def get_data():
+    df = pd.read_csv('FBMKLCI.csv')
+    df.fillna(method='ffill', inplace=True)
+    return df
+
+df = get_data()
+
+# --- Sidebar Settings ---
+st.sidebar.header("Model Configuration")
+window_size = st.sidebar.slider("Training Window (Years)", 3, 10, 5)
+epochs = st.sidebar.select_slider("Training Epochs", options=[10, 20, 50, 100], value=50)
+
+# --- Preprocessing ---
+scaler = MinMaxScaler()
+scaled_data = scaler.fit_transform(df[['close']])
+
+def create_sequences(data, window):
+    X, y = [], []
+    for i in range(len(data) - window):
+        X.append(data[i:i+window])
+        y.append(data[i+window])
+    return np.array(X), np.array(y)
+
+X, y = create_sequences(scaled_data, window_size)
+X = X.reshape((X.shape[0], X.shape[1], 1))
+
+# --- Model Training ---
+@st.cache_resource
+def train_model(X_train, y_train, window, epochs):
+    model = Sequential([
+        LSTM(64, return_sequences=False, input_shape=(window, 1)),
+        Dropout(0.2),
+        Dense(1)
+    ])
+    model.compile(optimizer='adam', loss='mse')
+    model.fit(X_train, y_train, epochs=epochs, batch_size=4, verbose=0)
+    return model
+
+if st.button('🎯 Train & Predict'):
+    with st.spinner('Training the LSTM model on GitHub servers...'):
+        model = train_model(X, y, window_size, epochs)
+        
+        # Predictions for plotting
+        preds_scaled = model.predict(X)
+        preds = scaler.inverse_transform(preds_scaled)
+        actual = scaler.inverse_transform(y.reshape(-1, 1))
+        
+        # Forecast the next year (e.g., 2025/2026)
+        last_window = scaled_data[-window_size:].reshape(1, window_size, 1)
+        next_val_scaled = model.predict(last_window)
+        next_val = scaler.inverse_transform(next_val_scaled)
+
+        # --- Visuals ---
+        st.success(f"Prediction for next cycle: **{next_val[0][0]:.2f}**")
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df['time'][window_size:], y=actual.flatten(), name="Actual Price"))
+        fig.add_trace(go.Scatter(x=df['time'][window_size:], y=preds.flatten(), name="LSTM Prediction"))
+        fig.update_layout(title="Model Performance", template="plotly_dark")
+        st.plotly_chart(fig, use_container_width=True)
+
+else:
+    # Show Candlestick by default
+    fig = go.Figure(data=[go.Candlestick(
+        x=df['time'], open=df['open'], high=df['high'], low=df['low'], close=df['close']
+    )])
+    fig.update_layout(title="FBMKLCI Historical Movement", template="plotly_dark")
+    st.plotly_chart(fig, use_container_width=True)
